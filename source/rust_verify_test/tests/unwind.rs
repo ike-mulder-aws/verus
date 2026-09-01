@@ -581,6 +581,36 @@ test_verify_one_file! {
 }
 
 test_verify_one_file! {
+    #[test] vstd_option_operations_no_unwind verus_code! {
+        use vstd::prelude::*;
+
+        fn option_expect(option: Option<u64>) -> u64
+            requires
+                option is Some,
+            no_unwind
+        {
+            option.expect("known Some")
+        }
+
+        fn option_unwrap(option: Option<u64>) -> u64
+            requires
+                option is Some,
+            no_unwind
+        {
+            option.unwrap()
+        }
+
+        fn option_operations(mut option: Option<u64>)
+            no_unwind
+        {
+            let _ = option.as_mut();
+            let _ = option.as_slice();
+            let _ = option.as_mut_slice();
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
     #[test] no_unwind_box_rc_arc_new verus_code! {
         use vstd::prelude::*;
         use std::rc::Rc;

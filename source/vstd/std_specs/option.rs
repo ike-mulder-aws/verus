@@ -162,6 +162,7 @@ pub assume_specification<T>[ Option::<T>::unwrap ](option: Option<T>) -> (t: T)
         option is Some,
     ensures
         t == spec_unwrap(option),
+    no_unwind
 ;
 
 // unwrap_or
@@ -195,6 +196,7 @@ pub assume_specification<T>[ Option::<T>::expect ](option: Option<T>, msg: &str)
         option is Some,
     ensures
         t == spec_expect(option, msg),
+    no_unwind
 ;
 
 // take
@@ -367,6 +369,7 @@ pub assume_specification<T>[ Option::as_mut ](option: &mut Option<T>) -> (res: O
             Some(r) => final(option).is_some() && res.is_some() && *res.unwrap() == r
                 && *final(res.unwrap()) == final(option).unwrap(),
         }),
+    no_unwind
 ;
 
 pub assume_specification<T>[ Option::as_slice ](option: &Option<T>) -> (res: &[T])
@@ -375,6 +378,7 @@ pub assume_specification<T>[ Option::as_slice ](option: &Option<T>) -> (res: &[T
             Some(x) => seq![x],
             None => seq![],
         }),
+    no_unwind
 ;
 
 #[doc(hidden)]
@@ -389,6 +393,7 @@ pub assume_specification<T>[ Option::as_mut_slice ](option: &mut Option<T>) -> (
             Some(_) => Some(final(res)@[0]),
             None => None,
         }),
+    no_unwind
 ;
 
 #[doc(hidden)]
