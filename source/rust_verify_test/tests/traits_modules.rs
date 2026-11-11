@@ -1110,3 +1110,225 @@ fn test_prune_method_impl_scaling() {
     assert!(result.is_ok(), "verification failed: {:?}", result.err().map(|e| e.errors));
     println!("test_prune_method_impl_scaling: N = {n}, {:.1} s", elapsed.as_secs_f64());
 }
+
+// Pruning reaches a trait method impl `impl T<t1..tn> for D { fn f }` only once
+// D, T::f and t1..tn are all reached, not just D and T::f.
+// Motivation: with N modules that each implement From<A_i> for W<B_i> for one generic W,
+// every module used to reach all N From::from impls, and through their signatures
+// every module's A_i and B_i, so verification time grew with N^2.
+// These tests check that the impls a module does need are still reached.
+// In each test, the impl is in another module, so that it is not a root of the
+// pruning for the module that uses it; the correct assertions need the impl,
+// and the assertion marked FAILS checks that its definition is really in context.
+
+test_verify_one_file! {
+    #[test] test_prune_method_impl_from_per_module verus_code! {
+        // The motivating pattern: one From impl per module, all for the same generic W
+        mod M1 {
+            pub struct W<R> { pub v: u64, pub r: core::marker::PhantomData<R> }
+        }
+        mod M2 {
+            use vstd::prelude::*;
+            use crate::M1::W;
+            pub struct Tag;
+            pub enum Input { A, B }
+            impl vstd::std_specs::convert::FromSpecImpl<Input> for W<Tag> {
+                open spec fn obeys_from_spec() -> bool { true }
+                open spec fn from_spec(v: Input) -> W<Tag> {
+                    W { v: if v is A { 0 } else { 1 }, r: core::marker::PhantomData }
+                }
+            }
+            impl From<Input> for W<Tag> {
+                fn from(v: Input) -> W<Tag> {
+                    W { v: match v { Input::A => 0, Input::B => 1 }, r: core::marker::PhantomData }
+                }
+            }
+        }
+        mod M3 {
+            use vstd::prelude::*;
+            use crate::M1::W;
+            pub struct Tag;
+            pub enum Input { C, D }
+            impl vstd::std_specs::convert::FromSpecImpl<Input> for W<Tag> {
+                open spec fn obeys_from_spec() -> bool { true }
+                open spec fn from_spec(v: Input) -> W<Tag> {
+                    W { v: if v is C { 10 } else { 11 }, r: core::marker::PhantomData }
+                }
+            }
+            impl From<Input> for W<Tag> {
+                fn from(v: Input) -> W<Tag> {
+                    W { v: match v { Input::C => 10, Input::D => 11 }, r: core::marker::PhantomData }
+                }
+            }
+        }
+        mod M4 {
+            use vstd::prelude::*;
+            use crate::M1::W;
+            fn test() {
+                let w2: W<crate::M2::Tag> = W::from(crate::M2::Input::B);
+                assert(w2.v == 1);
+                let w3: W<crate::M3::Tag> = crate::M3::Input::C.into();
+                assert(w3.v == 10);
+                assert(w3.v == 11); // FAILS
+            }
+        }
+    } => Err(err) => assert_one_fails(err)
+}
+
+test_verify_one_file! {
+    #[test] test_prune_method_impl_generic_call verus_code! {
+        mod M1 {
+            use vstd::prelude::*;
+            pub trait T<X> { spec fn f(&self, x: X) -> int; }
+            pub struct D {}
+            pub struct A {}
+            pub struct B {}
+            impl T<A> for D { open spec fn f(&self, x: A) -> int { 5 } }
+            impl T<B> for D { open spec fn f(&self, x: B) -> int { 7 } }
+        }
+        mod M2 {
+            use vstd::prelude::*;
+            use crate::M1::*;
+            pub open spec fn g<S: T<X>, X>(s: S, x: X) -> int { s.f(x) }
+            proof fn test(d: D, a: A, b: B) {
+                assert(g(d, a) == 5);
+                assert(g(d, b) == 7);
+                assert(g(d, a) == 7); // FAILS
+            }
+        }
+    } => Err(err) => assert_one_fails(err)
+}
+
+test_verify_one_file! {
+    #[test] test_prune_method_impl_typ_arg_reached_last verus_code! {
+        // A is reached only through E::h, which pruning reaches only after it has
+        // processed both D and T::f, so impl T<A> for D must be reached when A is reached.
+        // (This depends on the order in which pruning visits functions and types.)
+        mod M1 {
+            use vstd::prelude::*;
+            pub trait T<X> { spec fn f(&self, x: X) -> int; }
+            pub struct D {}
+            pub struct A {}
+            pub struct B {}
+            impl T<A> for D { open spec fn f(&self, x: A) -> int { 5 } }
+            impl T<B> for D { open spec fn f(&self, x: B) -> int { 7 } }
+            pub open spec fn g<S: T<X>, X>(s: S, x: X) -> int { s.f(x) }
+
+            pub trait T2 { spec fn h(&self) -> int; }
+            pub struct E {}
+            pub struct F {}
+            impl T2 for E { open spec fn h(&self) -> int { g(D {}, A {}) } }
+            impl T2 for F { open spec fn h(&self) -> int { 0 } }
+            pub open spec fn k<S: T2>(s: S) -> int { s.h() }
+
+            pub open spec fn p() -> int { g(D {}, B {}) }
+            pub open spec fn m() -> int { k(E {}) }
+            pub open spec fn q() -> int { k(F {}) }
+        }
+        mod M2 {
+            use vstd::prelude::*;
+            use crate::M1::*;
+            proof fn test() {
+                assert(p() == 7);
+                assert(m() == 5);
+                assert(q() == 0);
+                assert(m() == 7); // FAILS
+            }
+        }
+    } => Err(err) => assert_one_fails(err)
+}
+
+test_verify_one_file! {
+    #[test] test_prune_method_impl_projection_typ_arg verus_code! {
+        mod M1 {
+            use vstd::prelude::*;
+            pub trait Get { type Out; }
+            pub struct Q {}
+            impl Get for Q { type Out = u8; }
+            pub trait T<X> { type O; spec fn f(&self, x: X) -> Self::O; }
+            pub struct W<Y> { pub y: Y }
+            impl<Y: Get> T<<Y as Get>::Out> for W<Y> {
+                type O = int;
+                open spec fn f(&self, x: <Y as Get>::Out) -> int { 5 }
+            }
+            pub struct D {}
+            impl T<u16> for D { type O = int; open spec fn f(&self, x: u16) -> int { 9 } }
+        }
+        mod M2 {
+            use vstd::prelude::*;
+            use crate::M1::*;
+            pub open spec fn g<S: T<X>, X>(s: S, x: X) -> S::O { s.f(x) }
+            pub open spec fn h<Z: Get, S: T<Z::Out>>(s: S, x: Z::Out) -> S::O { s.f(x) }
+            proof fn test(w: W<Q>, d: D) {
+                assert(g(w, 3u8) == 5);
+                assert(h::<Q, W<Q>>(w, 3u8) == 5);
+                assert(g(d, 3u16) == 9);
+                assert(g(d, 3u16) == 5); // FAILS
+            }
+        }
+    } => Err(err) => assert_one_fails(err)
+}
+
+test_verify_one_file! {
+    #[test] test_prune_method_impl_default_method verus_code! {
+        mod M1 {
+            use vstd::prelude::*;
+            pub trait T<X> {
+                spec fn f(&self, x: X) -> int;
+                open spec fn d(&self, x: X) -> int { self.f(x) + 1 }
+            }
+            pub struct D {}
+            pub struct A {}
+            pub struct B {}
+            impl T<A> for D { open spec fn f(&self, x: A) -> int { 5 } }
+            impl T<B> for D {
+                open spec fn f(&self, x: B) -> int { 7 }
+                open spec fn d(&self, x: B) -> int { 20 }
+            }
+        }
+        mod M2 {
+            use vstd::prelude::*;
+            use crate::M1::*;
+            pub open spec fn gd<S: T<X>, X>(s: S, x: X) -> int { s.d(x) }
+            proof fn test(d: D, a: A, b: B) {
+                assert(gd(d, a) == 6);
+                assert(gd(d, b) == 20);
+                assert(gd(d, a) == 20); // FAILS
+            }
+        }
+    } => Err(err) => assert_one_fails(err)
+}
+
+test_verify_one_file! {
+    #[test] test_prune_method_impl_typ_arg_kinds verus_code! {
+        mod M1 {
+            use vstd::prelude::*;
+            pub trait T<X> { spec fn f(&self, x: X) -> int; }
+            pub struct D {}
+            pub struct E<Y> { pub y: Y }
+            pub struct A {}
+            impl T<u32> for D { open spec fn f(&self, x: u32) -> int { 1 } }
+            impl T<(A, bool)> for D { open spec fn f(&self, x: (A, bool)) -> int { 2 } }
+            impl T<D> for D { open spec fn f(&self, x: D) -> int { 3 } }
+            impl<Y> T<Y> for E<Y> { open spec fn f(&self, x: Y) -> int { 4 } }
+            impl T<[u8; 2]> for D { open spec fn f(&self, x: [u8; 2]) -> int { 5 } }
+            impl T<spec_fn(int) -> int> for D {
+                open spec fn f(&self, x: spec_fn(int) -> int) -> int { 6 }
+            }
+        }
+        mod M2 {
+            use vstd::prelude::*;
+            use crate::M1::*;
+            pub open spec fn g<S: T<X>, X>(s: S, x: X) -> int { s.f(x) }
+            proof fn test(d: D, e: E<A>, a: A, arr: [u8; 2], sf: spec_fn(int) -> int) {
+                assert(g(d, 3u32) == 1);
+                assert(g(d, (a, true)) == 2);
+                assert(g(d, d) == 3);
+                assert(g(e, a) == 4);
+                assert(g(d, arr) == 5);
+                assert(g(d, sf) == 6);
+                assert(g(d, sf) == 1); // FAILS
+            }
+        }
+    } => Err(err) => assert_one_fails(err)
+}
