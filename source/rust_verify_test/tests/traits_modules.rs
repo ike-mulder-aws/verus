@@ -1044,3 +1044,69 @@ test_verify_one_file! {
         }
     } => Err(err) => assert_fails(err, 3)
 }
+
+// Scaling benchmark for the pruning of trait method impls (ignored by default).
+// It generates a crate with N modules (N from the environment variable
+// VERUS_PRUNE_SCALING_N, default 100). Each module defines its own types Tag and Input
+// and implements From<Input> for W<Tag>, where W is one generic struct shared by
+// all modules, plus a function that calls its own `from`.
+// Verus verifies each module separately, with a context pruned to what that module
+// can reach. Each module only needs its own From impl, so the verification time
+// should grow linearly with N. If pruning reaches every module's From impl for W
+// from every module, it grows with N^2 instead.
+// Run it, at a chosen N and thread count, with:
+//   VERUS_PRUNE_SCALING_N=400 VERUS_EXTRA_ARGS="--num-threads 1" \
+//     vargo test --release -p rust_verify_test --test traits_modules \
+//     -- --ignored --nocapture test_prune_method_impl_scaling
+#[test]
+#[ignore]
+fn test_prune_method_impl_scaling() {
+    let n: usize = std::env::var("VERUS_PRUNE_SCALING_N")
+        .map(|s| s.parse().expect("VERUS_PRUNE_SCALING_N must be a number"))
+        .unwrap_or(100);
+    let mut code = String::from(
+        "use vstd::prelude::*;
+        verus! {
+            pub struct W<T> { pub v: u64, pub t: core::marker::PhantomData<T> }
+        }\n",
+    );
+    for i in 0..n {
+        code += &format!(
+            "pub mod m{i} {{
+                use vstd::prelude::*;
+                use crate::W;
+                verus! {{
+                    pub struct Tag;
+                    pub enum Input {{ A, B, C }}
+                    impl vstd::std_specs::convert::FromSpecImpl<Input> for W<Tag> {{
+                        open spec fn obeys_from_spec() -> bool {{ true }}
+                        open spec fn from_spec(x: Input) -> W<Tag> {{
+                            W {{
+                                v: match x {{ Input::A => 0, Input::B => 1, Input::C => 2 }},
+                                t: core::marker::PhantomData,
+                            }}
+                        }}
+                    }}
+                    impl From<Input> for W<Tag> {{
+                        fn from(x: Input) -> W<Tag> {{
+                            W {{
+                                v: match x {{ Input::A => 0, Input::B => 1, Input::C => 2 }},
+                                t: core::marker::PhantomData,
+                            }}
+                        }}
+                    }}
+                    pub fn f(x: Input) -> (w: W<Tag>)
+                        ensures w.v < 3,
+                    {{
+                        W::from(x)
+                    }}
+                }}
+            }}\n"
+        );
+    }
+    let start = std::time::Instant::now();
+    let result = verify_one_file("test_prune_method_impl_scaling", code, &[]);
+    let elapsed = start.elapsed();
+    assert!(result.is_ok(), "verification failed: {:?}", result.err().map(|e| e.errors));
+    println!("test_prune_method_impl_scaling: N = {n}, {:.1} s", elapsed.as_secs_f64());
+}
