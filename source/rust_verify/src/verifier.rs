@@ -227,6 +227,11 @@ impl air::messages::Diagnostics for QueuedReporter {
     }
 
     fn report_as_multi(&self, msgs: Vec<(ArcDynMessage, MessageLevel)>) {
+        if msgs.is_empty() {
+            // verify_bucket flushes once per SCC of the crate's call graph,
+            // mostly with nothing to report
+            return;
+        }
         let mut queue_msgs: Vec<(Message, MessageLevel)> = Vec::new();
         for (msg, level) in msgs {
             let msg: Message =
