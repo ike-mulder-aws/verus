@@ -215,14 +215,18 @@ impl<T: std::cmp::Eq + std::hash::Hash + Clone> Graph<T> {
     }
 
     pub fn get_scc_rep(&self, t: &T) -> T {
-        assert!(self.has_run);
-        assert!(self.mapping.contains_key(&t));
-        let id = self.mapping.get(&t).expect("key was present in the line above");
-        self.nodes[self.sccs[*id].rep()].t.clone()
+        self.get_scc_rep_if_present(t).expect("node is not in the graph")
     }
 
     pub fn in_same_scc(&self, t1: &T, t2: &T) -> bool {
         t1 == t2 || self.get_scc_rep(t1) == self.get_scc_rep(t2)
+    }
+
+    /// The representative of the SCC of t, if t is a node of the graph.
+    pub fn get_scc_rep_if_present(&self, t: &T) -> Option<T> {
+        assert!(self.has_run);
+        let id = self.mapping.get(t)?;
+        Some(self.nodes[self.sccs[*id].rep()].t.clone())
     }
 
     pub fn get_scc_nodes(&self, t: &T) -> Vec<T> {

@@ -30,7 +30,18 @@ pub fn ast_to_sst_krate(
 
     let mut sst_infos: HashMap<Fun, FunctionSst> = HashMap::new();
     let mut functions: Vec<FunctionSst> = Vec::new();
+    // Only the SCCs that hold one of the functions; skip the rest of the crate.
+    let mut relevant_sccs: HashSet<crate::recursion::Node> = HashSet::new();
+    for f in func_workmap.keys() {
+        let node = crate::recursion::Node::Fun(f.clone());
+        if let Some(rep) = ctx.global.func_call_graph.get_scc_rep_if_present(&node) {
+            relevant_sccs.insert(rep);
+        }
+    }
     for scc_rep in ctx.global.func_call_sccs.iter() {
+        if !relevant_sccs.contains(scc_rep) {
+            continue;
+        }
         let mut scc_functions: Vec<FunctionSst> = Vec::new();
         for node in ctx.global.func_call_graph.get_scc_nodes(&scc_rep) {
             if let crate::recursion::Node::Fun(f) = &node {

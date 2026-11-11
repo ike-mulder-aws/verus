@@ -2,8 +2,8 @@ use crate::buckets::Bucket;
 use crate::expand_errors_driver::{ExpandErrorsDriver, ExpandErrorsResult};
 use air::ast::{AssertId, Command};
 use rustc_session::config::ErrorOutputType;
-use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use vir::ast::{Fun, FunctionKind, ImplPath, ItemKind, Mode, Path, TraitImpl, VirErr};
 use vir::ast_to_sst_func::{mk_fun_ctx, mk_fun_ctx_dec};
@@ -70,6 +70,7 @@ pub struct OpGenerator<'a> {
     trait_impl_map: HashMap<Path, TraitImpl>,
 
     scc_idx: usize,
+    relevant_sccs: HashSet<Node>,
 }
 
 pub struct FunctionOpGenerator<'a: 'b, 'b> {
@@ -92,14 +93,48 @@ impl<'a> OpGenerator<'a> {
             trait_impl_map.insert(imp.x.impl_path.clone(), imp.clone());
         }
 
-        OpGenerator { ctx, func_map, trait_impl_map, bucket, scc_idx: 0 }
+        // The SCCs of the crate's call graph that hold a function or trait impl
+        // of the bucket's pruned crate; the others produce no ops.
+        let graph = &ctx.global.func_call_graph;
+        let mut relevant_sccs: HashSet<Node> = HashSet::new();
+        for f in func_map.keys() {
+            if let Some(rep) = graph.get_scc_rep_if_present(&Node::Fun(f.clone())) {
+                relevant_sccs.insert(rep);
+            }
+        }
+        let mut impl_nodes: Vec<Path> = trait_impl_map.keys().cloned().collect();
+        for (origin, extensions) in ctx.global.trait_impl_to_extensions.iter() {
+            if extensions.iter().any(|e| trait_impl_map.contains_key(e)) {
+                impl_nodes.push(origin.clone());
+            }
+        }
+        for p in impl_nodes {
+            let node = Node::TraitImpl(ImplPath::TraitImplPath(p));
+            if let Some(rep) = graph.get_scc_rep_if_present(&node) {
+                relevant_sccs.insert(rep);
+            }
+        }
+
+        OpGenerator { ctx, func_map, trait_impl_map, bucket, scc_idx: 0, relevant_sccs }
     }
 
     pub fn next<'b>(&'b mut self) -> Result<Option<FunctionOpGenerator<'a, 'b>>, VirErr>
     where
         'a: 'b,
     {
-        // Iterate through each SCC
+        // Iterate through each SCC that holds something of the bucket's crate
+        while self.scc_idx < self.ctx.global.func_call_sccs.len()
+            && !self.relevant_sccs.contains(&self.ctx.global.func_call_sccs[self.scc_idx])
+        {
+            #[cfg(debug_assertions)]
+            {
+                // The skipped SCCs must produce no ops
+                let scc_rep = self.ctx.global.func_call_sccs[self.scc_idx].clone();
+                let ops = self.handle_scc_component(scc_rep.clone())?;
+                assert!(ops.is_empty(), "skipped SCC {:?} produced ops", scc_rep);
+            }
+            self.scc_idx += 1;
+        }
         if self.scc_idx < self.ctx.global.func_call_sccs.len() {
             let current_queue = VecDeque::from(
                 self.handle_scc_component(self.ctx.global.func_call_sccs[self.scc_idx].clone())?,
